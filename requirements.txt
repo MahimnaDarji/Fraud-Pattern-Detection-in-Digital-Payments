@@ -1,0 +1,14 @@
+pyspark
+kafka-python
+faker
+pydantic
+python-dotenv
+scikit-learn
+xgboost
+lightgbm
+networkx
+pandas
+pyarrow
+fastapi
+uvicorn
+streamlit
