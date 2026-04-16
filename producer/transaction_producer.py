@@ -27,17 +27,15 @@ class KafkaTransactionProducer:
         dataset_path: str,
         config: AppSettings | None = None,
         batch_size: int = 10_000,
-        dry_run: bool | None = None,
     ) -> None:
         settings = config or get_settings()
         self.dataset_path = Path(dataset_path)
         self.bootstrap_servers = settings.kafka_bootstrap_servers
         self.topic = settings.kafka_topic or "transactions"
         self.batch_size = batch_size
-        self.rows_per_second = settings.producer_rows_per_second
+        self.rows_per_second = settings.producer_streaming_rate
         self.send_delay_seconds = settings.producer_send_delay_seconds
-        self.log_every_n = max(1, settings.producer_log_every_n)
-        self.dry_run = settings.producer_dry_run if dry_run is None else dry_run
+        self.log_every_n = max(1, settings.producer_log_frequency or settings.log_frequency)
         self._logger = get_logger(__name__)
         self._producer: Any | None = None
         self._dataset_columns: set[str] = set()
@@ -45,16 +43,13 @@ class KafkaTransactionProducer:
         self.valid_records_sent = 0
         self.invalid_records_skipped = 0
 
-        if self.dry_run:
-            self._logger.info("DRY RUN MODE ENABLED")
-        else:
-            kafka_module = importlib.import_module("kafka")
-            kafka_producer_cls = getattr(kafka_module, "KafkaProducer")
-            self._producer = kafka_producer_cls(
-                bootstrap_servers=self.bootstrap_servers,
-                value_serializer=lambda message: json.dumps(message, default=str).encode("utf-8"),
-                key_serializer=lambda key: str(key).encode("utf-8"),
-            )
+        kafka_module = importlib.import_module("kafka")
+        kafka_producer_cls = getattr(kafka_module, "KafkaProducer")
+        self._producer = kafka_producer_cls(
+            bootstrap_servers=self.bootstrap_servers,
+            value_serializer=lambda message: json.dumps(message, default=str).encode("utf-8"),
+            key_serializer=lambda key: str(key).encode("utf-8"),
+        )
 
     def load_data(self) -> Iterator[dict[str, Any]]:
         """Load Parquet rows lazily using Arrow batches for large-file efficiency."""
@@ -84,16 +79,12 @@ class KafkaTransactionProducer:
     def send_to_kafka(self, message: dict[str, Any]) -> None:
         """Send a processed message to Kafka using a stable partition key."""
         partition_key = self._get_partition_key(message)
-        if self.dry_run:
-            self._logger.info("Kafka send skipped")
-            return
-
         if self._producer is None:
             raise RuntimeError("Kafka producer is not initialized.")
 
         self._producer.send(self.topic, key=partition_key, value=message).get(timeout=30)
 
-    def stream_data(self, limit: int | None = None, preview: bool = False) -> None:
+    def stream_data(self) -> None:
         """Stream all Parquet records to Kafka topic as processed JSON messages."""
         self.total_records_read = 0
         self.valid_records_sent = 0
@@ -115,20 +106,11 @@ class KafkaTransactionProducer:
                     self._log_progress_if_needed()
                     continue
 
-                message_key = self._get_partition_key(message)
-
-                if preview:
-                    print(json.dumps(message, indent=2, default=str))
-                    print(f"message key used: {message_key}")
-
                 self.send_to_kafka(message)
                 self.valid_records_sent += 1
 
                 self._throttle()
                 self._log_progress_if_needed()
-
-                if limit is not None and self.total_records_read >= limit:
-                    break
             except Exception:
                 self.invalid_records_skipped += 1
                 self._logger.exception(
