@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from collections import Counter
+import json
 import pandas as pd
 
 from pyspark.sql import DataFrame, SparkSession
@@ -40,7 +41,7 @@ from utils.logger import configure_logging, get_logger
 
 
 class TransactionSparkPipeline:
-    """Kafka-backed Structured Streaming pipeline for transaction payload verification."""
+    """Kafka-backed Structured Streaming pipeline for real-time fraud detection."""
 
     def __init__(self, settings: AppSettings | None = None) -> None:
         self.settings = settings or get_settings()
@@ -51,6 +52,24 @@ class TransactionSparkPipeline:
         self._anomaly_artifact = self._load_anomaly_model_artifact()
         self._fraud_artifact = self._load_fraud_model_artifact()
         self._graph_builder = TransactionGraphBuilder()
+        self._alert_producer = None
+        self._audit_store = self._init_audit_store()
+
+    #: Ordered fields written to every fraud_alerts Kafka message.
+    _ALERT_FIELDS: tuple[str, ...] = (
+        "transaction_id",
+        "user_id",
+        "account_id",
+        "merchant_id",
+        "amount",
+        "timestamp",
+        "fraud_probability",
+        "anomaly_score",
+        "propagated_risk_score",
+        "alert_reason",
+        "alert_severity",
+        "alert_timestamp",
+    )
 
     def _create_spark_session(self) -> SparkSession:
         """Create a Spark session configured for Structured Streaming and Kafka source use."""
@@ -555,40 +574,139 @@ class TransactionSparkPipeline:
             high_alerts,
         )
 
-        print(
-            "batch_id=%d new_nodes=%d new_edges=%d total_nodes=%d total_edges=%d"
-            % (
-                graph_stats.batch_id,
-                graph_stats.new_nodes,
-                graph_stats.new_edges,
-                graph_stats.total_nodes,
-                graph_stats.total_edges,
+        self._persist_batch_to_db(graph_update_frame, batch_id)
+        self._publish_alerts_to_kafka(graph_update_frame, batch_id)
+
+    def _init_audit_store(self):
+        """Initialise the shared audit repository; log and re-raise on failure."""
+        from api.repository import get_repository
+        try:
+            repo = get_repository(db_path=self.settings.api_db_path)
+            self._logger.info(
+                "Audit store connected db_path=%s", self.settings.api_db_path
             )
+            return repo
+        except Exception:
+            self._logger.exception(
+                "Failed to initialise audit store db_path=%s — batch writes disabled",
+                self.settings.api_db_path,
+            )
+            return None
+
+    def _persist_batch_to_db(self, frame: pd.DataFrame, batch_id: int) -> None:
+        """Write scored transactions and triggered alerts to the audit database.
+
+        Both writes use batch executemany inside a single transaction.
+        Write failures are logged and never propagate — the streaming query
+        continues uninterrupted.
+        """
+        if self._audit_store is None:
+            return
+
+        # --- scored_transactions (all rows) ---
+        try:
+            inserted_txns = self._audit_store.insert_transaction_batch(
+                frame=frame, batch_id=batch_id
+            )
+            self._logger.info(
+                "Audit write batch_id=%d table=scored_transactions inserted=%d",
+                batch_id,
+                inserted_txns,
+            )
+        except Exception:
+            self._logger.exception(
+                "Audit write failed batch_id=%d table=scored_transactions",
+                batch_id,
+            )
+
+        # --- fraud_alerts (alert rows only) ---
+        try:
+            inserted_alerts = self._audit_store.insert_alert_batch(
+                frame=frame, batch_id=batch_id
+            )
+            self._logger.info(
+                "Audit write batch_id=%d table=fraud_alerts inserted=%d",
+                batch_id,
+                inserted_alerts,
+            )
+        except Exception:
+            self._logger.exception(
+                "Audit write failed batch_id=%d table=fraud_alerts",
+                batch_id,
+            )
+
+    def _build_alert_producer(self) -> None:
+        """Lazily initialise the Kafka producer used for the fraud-alerts topic."""
+        if self._alert_producer is not None:
+            return
+        import importlib
+
+        kafka_module = importlib.import_module("kafka")
+        kafka_producer_cls = getattr(kafka_module, "KafkaProducer")
+        self._alert_producer = kafka_producer_cls(
+            bootstrap_servers=self.settings.alert_kafka_bootstrap_servers,
+            value_serializer=lambda message: json.dumps(message, default=str).encode("utf-8"),
+            key_serializer=lambda key: str(key).encode("utf-8") if key else b"unknown",
+        )
+        self._logger.info(
+            "Alert Kafka producer initialised bootstrap_servers=%s topic=%s",
+            self.settings.alert_kafka_bootstrap_servers,
+            self.settings.alert_kafka_topic,
         )
 
-        if self.settings.debug_mode:
-            preview_columns = [
-                "transaction_id",
-                "user_id",
-                "account_id",
-                "amount",
-                "anomaly_score",
-                "is_anomaly",
-                "fraud_probability",
-                "fraud_prediction",
-                "pagerank_score",
-                "community_id",
-                "triangle_count",
-                "component_id",
-                "component_size",
-                "propagated_risk_score",
-                "alert_triggered",
-                "alert_reason",
-                "alert_severity",
-                "alert_timestamp",
-            ]
-            preview_frame = graph_update_frame[preview_columns].head(self.settings.spark_console_num_rows)
-            print(preview_frame.to_string(index=False))
+    def _publish_alerts_to_kafka(self, frame: pd.DataFrame, batch_id: int) -> None:
+        """Filter triggered alerts from batch frame and publish each to the fraud_alerts topic."""
+        alert_frame = frame[frame["alert_triggered"].fillna(False).astype(bool)]
+        if alert_frame.empty:
+            return
+
+        try:
+            self._build_alert_producer()
+        except Exception:
+            self._logger.exception(
+                "Alert Kafka producer failed to initialise batch_id=%d — alerts not published",
+                batch_id,
+            )
+            return
+
+        topic = self.settings.alert_kafka_topic
+        published = 0
+        failed = 0
+
+        for _, row in alert_frame.iterrows():
+            message: dict = {}
+            for field in self._ALERT_FIELDS:
+                value = row.get(field)
+                message[field] = None if (value is None or (isinstance(value, float) and pd.isna(value))) else value
+
+            partition_key = (
+                str(message["transaction_id"]).strip()
+                if message.get("transaction_id")
+                else None
+            )
+
+            try:
+                self._alert_producer.send(topic, key=partition_key, value=message).get(timeout=10)
+                published += 1
+            except Exception:
+                failed += 1
+                self._logger.exception(
+                    "Failed to publish alert to Kafka batch_id=%d topic=%s transaction_id=%s",
+                    batch_id,
+                    topic,
+                    message.get("transaction_id"),
+                )
+
+        if published:
+            self._alert_producer.flush()
+
+        self._logger.info(
+            "Alert publish batch_id=%d topic=%s published=%d failed=%d",
+            batch_id,
+            topic,
+            published,
+            failed,
+        )
 
     def _evaluate_alert_row(self, row: pd.Series) -> tuple[bool, str | None, str | None]:
         """Evaluate deterministic alert conditions from final transaction risk signals."""
@@ -669,12 +787,6 @@ class TransactionSparkPipeline:
                 .foreachBatch(self._log_scored_batch_summary)
                 .start()
             )
-            if self.settings.debug_mode:
-                self._logger.info(
-                    "Debug batch preview enabled numRows=%d checkpoint=%s",
-                    self.settings.spark_console_num_rows,
-                    self.settings.spark_checkpoint_location,
-                )
             self._logger.info("Anomaly and fraud scoring stream started")
             self._logger.info("Active query status: %s", query.status)
             return query

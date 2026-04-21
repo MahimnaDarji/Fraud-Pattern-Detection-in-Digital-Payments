@@ -8,11 +8,18 @@ import sys
 
 from config.settings import AppSettings, get_settings
 from models.fraud_model import load_model, train_fraud_model
+from notifications.service import run_notification_service
 from stream_processing.spark_pipeline import run_streaming_pipeline
 from utils.logger import configure_logging, get_logger
 
 
-VALID_MODES = {"train_fraud_model", "run_streaming_pipeline"}
+VALID_MODES = {
+    "train_fraud_model",
+    "run_streaming_pipeline",
+    "run_notification_service",
+    "run_api_server",
+    "run_dashboard",
+}
 
 
 def _parse_args() -> argparse.Namespace:
@@ -22,7 +29,10 @@ def _parse_args() -> argparse.Namespace:
         "mode",
         nargs="?",
         default="run_streaming_pipeline",
-        help="Execution mode: train_fraud_model or run_streaming_pipeline",
+        help=(
+            "Execution mode: train_fraud_model | run_streaming_pipeline "
+            "| run_notification_service | run_api_server | run_dashboard"
+        ),
     )
     return parser.parse_args()
 
@@ -70,6 +80,55 @@ def _run_streaming_pipeline_mode(settings: AppSettings, logger) -> None:
     run_streaming_pipeline()
 
 
+def _run_notification_service_mode(settings: AppSettings, logger) -> None:
+    """Start the blocking notification service that reads from fraud_alerts topic."""
+    logger.info(
+        "Notification service startup mode=run_notification_service "
+        "topic=%s group_id=%s",
+        settings.alert_kafka_topic,
+        settings.alert_notification_group_id,
+    )
+    run_notification_service(settings=settings)
+
+
+def _run_api_server_mode(settings: AppSettings, logger) -> None:
+    """Start the uvicorn server serving the fraud alert REST API."""
+    import uvicorn
+    from api.app import create_app
+
+    logger.info(
+        "API server startup mode=run_api_server host=%s port=%d db_path=%s",
+        settings.api_host,
+        settings.api_port,
+        settings.api_db_path,
+    )
+    app = create_app()
+    uvicorn.run(
+        app,
+        host=settings.api_host,
+        port=settings.api_port,
+        log_level="info",
+    )
+
+
+def _run_dashboard_mode(settings: AppSettings, logger) -> None:
+    """Launch the Streamlit fraud investigation dashboard."""
+    import subprocess
+    import sys
+    logger.info(
+        "Dashboard startup mode=run_dashboard db_path=%s",
+        settings.api_db_path,
+    )
+    subprocess.run(
+        [
+            sys.executable, "-m", "streamlit", "run",
+            "dashboard/app.py",
+            "--server.headless", "true",
+        ],
+        check=True,
+    )
+
+
 def main() -> None:
     """Dispatch CLI mode to supervised training or streaming pipeline runtime."""
     args = _parse_args()
@@ -82,14 +141,27 @@ def main() -> None:
 
     if mode not in VALID_MODES:
         logger.error(
-            "Invalid mode '%s'. Valid modes: train_fraud_model, run_streaming_pipeline",
+            "Invalid mode '%s'. Valid modes: %s",
             mode,
+            ", ".join(sorted(VALID_MODES)),
         )
         sys.exit(2)
 
     try:
         if mode == "train_fraud_model":
             _run_train_fraud_model_mode(settings, logger)
+            return
+
+        if mode == "run_notification_service":
+            _run_notification_service_mode(settings, logger)
+            return
+
+        if mode == "run_api_server":
+            _run_api_server_mode(settings, logger)
+            return
+
+        if mode == "run_dashboard":
+            _run_dashboard_mode(settings, logger)
             return
 
         _run_streaming_pipeline_mode(settings, logger)
