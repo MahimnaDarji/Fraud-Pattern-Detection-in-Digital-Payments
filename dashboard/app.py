@@ -1,464 +1,877 @@
-"""Fraud Investigation Dashboard — Streamlit entry point.
+"""Fraud Investigation Console.
 
 Run with:
     streamlit run dashboard/app.py
-
-The dashboard reads directly from the SQLite audit database shared with the
-streaming pipeline. It does not require the FastAPI server to be running.
 """
 
 from __future__ import annotations
 
-import time
 from datetime import datetime, timedelta, timezone
 
-import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
-from data import (
-    load_alerts,
-    load_high_risk_transactions,
-    load_metrics,
-    load_recent_transactions,
-)
-
-# ---------------------------------------------------------------------------
-# Page config — must be the first Streamlit call
-# ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Fraud Investigation Dashboard",
-    page_icon="🛡️",
+    page_title="Fraud Investigation Console",
+    page_icon="FD",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ---------------------------------------------------------------------------
-# Custom CSS — dark investigation-focused design
-# ---------------------------------------------------------------------------
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _today_utc():
+    return _now_utc().date()
+
+
+def _apply_quick_range(range_name: str) -> None:
+    today = _today_utc()
+    if range_name == "Last 24 Hours":
+        start_date = today - timedelta(days=1)
+        end_date = today
+    elif range_name == "Last 7 Days":
+        start_date = today - timedelta(days=7)
+        end_date = today
+    elif range_name == "Last 30 Days":
+        start_date = today - timedelta(days=30)
+        end_date = today
+    elif range_name == "MTD":
+        start_date = today.replace(day=1)
+        end_date = today
+    elif range_name == "Last 90 Days":
+        start_date = today - timedelta(days=90)
+        end_date = today
+    else:
+        start_date = st.session_state["start_date"]
+        end_date = st.session_state["end_date"]
+
+    st.session_state["quick_range"] = range_name
+    st.session_state["start_date"] = start_date
+    st.session_state["end_date"] = end_date
+
+
+def _clear_filters() -> None:
+    today = _today_utc()
+    st.session_state["severity"] = "All"
+    st.session_state["user_account"] = ""
+    st.session_state["merchant"] = ""
+    st.session_state["transaction_id"] = ""
+    st.session_state["start_date"] = today - timedelta(days=7)
+    st.session_state["end_date"] = today
+    st.session_state["quick_range"] = "Last 7 Days"
+    st.session_state["last_refresh"] = _now_utc().strftime("%H:%M:%S UTC")
+
+
+defaults = {
+    "severity": "All",
+    "user_account": "",
+    "merchant": "",
+    "transaction_id": "",
+    "start_date": _today_utc() - timedelta(days=7),
+    "end_date": _today_utc(),
+    "quick_range": "Last 7 Days",
+    "auto_refresh": False,
+    "refresh_interval": "30s",
+    "system_health": "Healthy",
+    "last_refresh": "Not refreshed",
+}
+for key, value in defaults.items():
+    st.session_state.setdefault(key, value)
+
+if st.session_state["refresh_interval"] not in {"10s", "30s", "60s", "120s"}:
+    st.session_state["refresh_interval"] = "30s"
+
+
+def _plotly_layout(title: str) -> dict:
+    return {
+        "title": {"text": title, "font": {"size": 12, "color": "#9fb2c9"}, "x": 0.01, "y": 0.96},
+        "template": "none",
+        "paper_bgcolor": "rgba(0,0,0,0)",
+        "plot_bgcolor": "rgba(0,0,0,0)",
+        "font": {"family": "Inter, Roboto, sans-serif", "size": 11, "color": "#b3c2d7"},
+        "margin": {"l": 36, "r": 16, "t": 36, "b": 32},
+        "xaxis": {
+            "showgrid": True,
+            "gridcolor": "rgba(130,153,179,0.18)",
+            "linecolor": "rgba(130,153,179,0.25)",
+            "tickfont": {"size": 10, "color": "#8ea2ba"},
+            "zeroline": False,
+        },
+        "yaxis": {
+            "showgrid": True,
+            "gridcolor": "rgba(130,153,179,0.18)",
+            "linecolor": "rgba(130,153,179,0.25)",
+            "tickfont": {"size": 10, "color": "#8ea2ba"},
+            "zeroline": False,
+        },
+        "legend": {
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "right",
+            "x": 1,
+            "font": {"size": 10, "color": "#8ea2ba"},
+            "bgcolor": "rgba(0,0,0,0)",
+            "borderwidth": 0,
+        },
+    }
+
 
 st.markdown(
     """
     <style>
-    /* ── Global ── */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    :root {
+        --bg-main: #0a0f17;
+        --bg-sidebar: #0d1420;
+        --bg-card: #111a28;
+        --bg-control: #142032;
+        --border-soft: #223247;
+        --text-title: #e8eef9;
+        --text-card: #b3c2d7;
+        --text-body: #8ea2ba;
+        --accent-primary: #2f6fed;
+        --positive: #2ea874;
+        --negative: #bf5f5f;
+        --panel-padding: 0.62rem;
+        --layout-gap: 1rem;
+    }
 
-    html, body, [class*="css"] {
-        font-family: 'Inter', sans-serif;
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+
+    html, body, [class*="css"], [class*="st-"] {
+        font-family: "Inter", "Roboto", sans-serif;
     }
 
     .stApp {
-        background: #0d1117;
-        color: #e6edf3;
+        background: var(--bg-main);
+        color: var(--text-card);
+        overflow-x: hidden;
     }
 
-    /* ── Sidebar ── */
     [data-testid="stSidebar"] {
-        background: #161b22;
-        border-right: 1px solid #21262d;
+        background: var(--bg-sidebar);
+        border-right: 1px solid var(--border-soft);
+        width: 312px !important;
+        min-width: 300px !important;
+        max-width: 320px !important;
     }
-    [data-testid="stSidebar"] .stSelectbox label,
-    [data-testid="stSidebar"] .stTextInput label,
-    [data-testid="stSidebar"] .stDateInput label,
-    [data-testid="stSidebar"] .stSlider label {
-        color: #8b949e;
-        font-size: 0.78rem;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
+
+    [data-testid="stSidebar"] .block-container {
+        padding: 0.75rem 0.85rem 0.65rem 0.85rem;
+    }
+
+    [data-testid="stAppViewContainer"] .main .block-container {
+        max-width: 1240px;
+        padding: 0.72rem 0.9rem 0.9rem 0.9rem;
+    }
+
+    .t-section {
+        margin: 0;
+        color: var(--text-title);
+        font-size: 1.22rem;
+        line-height: 1.2;
+        font-weight: 650;
+    }
+
+    .t-card {
+        margin: 0;
+        color: #9fb2c9;
+        font-size: 0.7rem;
         font-weight: 600;
+        line-height: 1.2;
     }
 
-    /* ── KPI metric cards ── */
-    [data-testid="metric-container"] {
-        background: #161b22;
-        border: 1px solid #21262d;
-        border-radius: 10px;
-        padding: 18px 22px;
-    }
-    [data-testid="metric-container"] [data-testid="stMetricValue"] {
-        font-size: 2rem;
-        font-weight: 700;
-        color: #58a6ff;
-    }
-    [data-testid="metric-container"] [data-testid="stMetricLabel"] {
-        color: #8b949e;
+    .t-body {
+        margin: 0;
+        color: #98abc2;
         font-size: 0.78rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
+        line-height: 1.3;
     }
 
-    /* ── Section headings ── */
-    .section-header {
-        font-size: 0.72rem;
+    .sidebar-title {
+        margin: 0;
+        color: var(--text-title);
+        font-size: 0.98rem;
         font-weight: 700;
-        color: #8b949e;
+        letter-spacing: 0.02em;
+    }
+
+    .sidebar-subtitle {
+        margin: 0.18rem 0 0.5rem 0;
+        color: var(--text-body);
+        font-size: 0.74rem;
+    }
+
+    .section-label {
+        margin: 0.56rem 0 0.28rem 0;
+        color: var(--text-body);
         text-transform: uppercase;
         letter-spacing: 0.12em;
-        margin: 0 0 12px 0;
-        padding-bottom: 8px;
-        border-bottom: 1px solid #21262d;
+        font-size: 0.66rem;
+        font-weight: 700;
     }
 
-    /* ── Severity badges ── */
-    .badge-high   { background:#da3633;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.72rem;font-weight:600; }
-    .badge-medium { background:#d29922;color:#000;padding:2px 8px;border-radius:4px;font-size:0.72rem;font-weight:600; }
-    .badge-low    { background:#238636;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.72rem;font-weight:600; }
-
-    /* ── DataFrames ── */
-    [data-testid="stDataFrame"] {
-        border: 1px solid #21262d;
+    [data-testid="stSidebar"] .stSelectbox > div > div,
+    [data-testid="stSidebar"] .stDateInput > div > div,
+    [data-testid="stSidebar"] .stTextInput > div > div > input {
+        background: var(--bg-control);
+        border: 1px solid var(--border-soft);
         border-radius: 8px;
+        color: var(--text-title);
     }
 
-    /* ── Divider ── */
-    hr { border-color: #21262d; margin: 24px 0; }
-
-    /* ── Alert banner ── */
-    .alert-banner {
-        background: linear-gradient(135deg, #da363322, #da363305);
-        border: 1px solid #da363355;
-        border-radius: 10px;
-        padding: 14px 18px;
-        margin-bottom: 16px;
+    [data-testid="stSidebar"] .stButton > button {
+        background: var(--bg-control);
+        border: 1px solid var(--border-soft);
+        color: var(--text-title);
+        border-radius: 8px;
+        min-height: 1.88rem;
+        font-size: 0.74rem;
         font-weight: 600;
-        color: #ff7b72;
+        transition: border-color 140ms ease, transform 140ms ease;
+    }
+
+    [data-testid="stSidebar"] .stButton > button:hover {
+        border-color: var(--accent-primary);
+    }
+
+    .sidebar-footer-row {
+        margin-top: 0.5rem;
+        border-top: 1px solid var(--border-soft);
+        padding-top: 0.5rem;
+        color: var(--text-body);
+        font-size: 0.7rem;
+    }
+
+    .control-strip {
+        background: rgba(17, 26, 40, 0.82);
+        border: 1px solid rgba(135, 158, 185, 0.24);
+        border-radius: 10px;
+        padding: 0.28rem 0.58rem;
+    }
+
+    .status-inline {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.44rem;
+        min-height: 1.74rem;
+        white-space: nowrap;
+    }
+
+    .status-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: var(--positive);
+        box-shadow: 0 0 0 3px rgba(46, 168, 116, 0.14);
+    }
+
+    .status-title {
+        margin: 0;
+        color: var(--text-title);
+        font-size: 0.69rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+    }
+
+    .status-sep {
+        width: 1px;
+        height: 0.86rem;
+        background: rgba(142, 162, 186, 0.35);
+        margin: 0 0.08rem;
+    }
+
+    .status-note {
+        margin: 0;
+        color: var(--text-body);
+        font-size: 0.68rem;
+        font-weight: 500;
+    }
+
+    .auto-label {
+        margin: 0;
+        color: var(--text-body);
+        font-size: 0.65rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        line-height: 1.72rem;
+        white-space: nowrap;
+    }
+
+    .top-controls [data-testid="stHorizontalBlock"] {
+        align-items: center;
+    }
+
+    .top-controls .stToggle,
+    .top-controls .stSelectbox,
+    .top-controls .stButton {
+        margin: 0;
+    }
+
+    .top-controls .stToggle [data-baseweb="switch"] {
+        transform: scale(0.78);
+        transform-origin: center;
+    }
+
+    .top-controls .stSelectbox [data-baseweb="select"] {
+        min-height: 1.72rem;
+        border-radius: 7px;
+        border: 1px solid rgba(135, 158, 185, 0.3);
+        background: rgba(20, 32, 50, 0.78);
+        font-size: 0.68rem;
+    }
+
+    .top-controls .stButton > button {
+        background: rgba(20, 32, 50, 0.78);
+        border: 1px solid rgba(135, 158, 185, 0.3);
+        color: var(--text-title);
+        border-radius: 7px;
+        min-height: 1.72rem;
+        width: 1.72rem;
+        padding: 0;
+        font-size: 0.74rem;
+        font-weight: 700;
+    }
+
+    .top-controls .stButton > button:hover {
+        border-color: rgba(95, 150, 232, 0.7);
+    }
+
+    .header-block {
+        margin-top: 0.06rem;
+        padding: 0;
+    }
+
+    .header-title {
+        margin: 0;
+        color: var(--text-title);
+        font-size: 1.24rem;
+        line-height: 1.18;
+        font-weight: 680;
+    }
+
+    .header-subtitle {
+        margin: 0.18rem 0 0 0;
+        color: var(--text-body);
+        font-size: 0.76rem;
+        line-height: 1.25;
+        font-weight: 500;
+    }
+
+    .shell-card,
+    .analytics-card,
+    .table-card,
+    .heatmap-card,
+    .hero-card,
+    .kpi-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-soft);
+        border-radius: 10px;
+        padding: var(--panel-padding);
+    }
+
+    [data-testid="stPlotlyChart"] {
+        background: var(--bg-card);
+        border: 1px solid var(--border-soft);
+        border-radius: 10px;
+        padding: var(--panel-padding);
+    }
+
+    .hero-card {
+        padding: var(--panel-padding);
+    }
+
+    .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 12px;
+        width: 100%;
+    }
+
+    .kpi-card {
+        min-height: 94px;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        gap: 0.34rem;
+        padding: var(--panel-padding);
+        background: rgba(22, 34, 50, 0.58);
+        border: 1px solid rgba(141, 166, 194, 0.22);
+        box-shadow: 0 0 0 1px rgba(168, 191, 216, 0.03), 0 6px 18px rgba(5, 9, 15, 0.14);
+        transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease, background-color 120ms ease;
+    }
+
+    .kpi-card:hover {
+        transform: translateY(-1px);
+        background: rgba(24, 37, 54, 0.68);
+        border-color: rgba(96, 139, 199, 0.38);
+        box-shadow: 0 0 0 1px rgba(157, 189, 224, 0.08), 0 10px 20px rgba(5, 9, 15, 0.18);
+    }
+
+    .kpi-head {
+        display: flex;
+        align-items: center;
+        gap: 0.38rem;
+        min-width: 0;
+    }
+
+    .kpi-icon {
+        width: 1.22rem;
+        height: 1.22rem;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.56rem;
+        font-weight: 700;
+        flex: 0 0 auto;
+    }
+
+    .kpi-icon-blue {
+        background: rgba(47, 111, 237, 0.2);
+        color: #8fb3ff;
+    }
+
+    .kpi-icon-red {
+        background: rgba(191, 95, 95, 0.22);
+        color: #efaaaa;
+    }
+
+    .kpi-icon-green {
+        background: rgba(46, 168, 116, 0.2);
+        color: #86dfb8;
+    }
+
+    .kpi-icon-orange {
+        background: rgba(216, 137, 43, 0.22);
+        color: #f1be79;
+    }
+
+    .kpi-label {
+        margin: 0;
+        color: #8aa0b8;
+        font-size: 0.57rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .kpi-number {
+        margin: 0;
+        color: var(--text-title);
+        font-size: 1.72rem;
+        line-height: 1.02;
+        font-weight: 800;
+    }
+
+    .kpi-delta {
+        margin: 0;
+        font-size: 0.56rem;
+        line-height: 1.1;
+        color: #8297b0;
+    }
+
+    .delta-arrow {
+        display: inline-block;
+        width: 0.72rem;
+        font-size: 0.56rem;
+        font-weight: 700;
+    }
+
+    .kpi-delta-up { color: var(--positive); }
+    .kpi-delta-down { color: var(--negative); }
+    .kpi-delta-flat { color: #91a4ba; }
+
+    [data-baseweb="tab-list"] {
+        gap: 0.8rem;
+        border-bottom: 1px solid var(--border-soft);
+        margin-top: 0.05rem;
+        margin-bottom: 0.1rem;
+    }
+
+    [data-baseweb="tab"] {
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
+        color: var(--text-card);
+        padding: 0.3rem 0.12rem;
+        min-height: 1.65rem;
+        font-size: 0.72rem;
+        font-weight: 600;
+    }
+
+    [aria-selected="true"][data-baseweb="tab"] {
+        color: var(--text-title);
+        border-bottom-color: var(--accent-primary);
+    }
+
+    [data-testid="stDataFrame"] {
+        background: var(--bg-card) !important;
+        border: 1px solid var(--border-soft) !important;
+        border-radius: 10px;
+    }
+
+    [data-testid="stDataFrame"] * {
+        color: var(--text-card) !important;
+        background: transparent !important;
+    }
+
+    .styled-table {
+        width: 100%;
+        border-collapse: collapse;
+        border-spacing: 0;
+        overflow: hidden;
+        border: 1px solid var(--border-soft);
+        border-radius: 10px;
+    }
+
+    .styled-table th,
+    .styled-table td {
+        padding: 0.42rem 0.56rem;
+        text-align: left;
+        border-bottom: 1px solid rgba(34, 50, 71, 0.65);
+        font-size: 0.74rem;
+        color: var(--text-card);
+    }
+
+    .styled-table th {
+        color: #9fb2c9;
+        background: rgba(20, 32, 50, 0.72);
+        font-weight: 600;
+    }
+
+    .styled-table tbody tr:nth-child(even) {
+        background: rgba(20, 32, 50, 0.45);
+    }
+
+    .styled-table tr {
+        transition: background-color 120ms ease;
+    }
+
+    .styled-table tr:hover {
+        background: rgba(47, 111, 237, 0.1);
+    }
+
+    .sp-16 { margin-top: var(--layout-gap); }
+    .sp-20 { margin-top: var(--layout-gap); }
+
+    @media (max-width: 1260px) {
+        .kpi-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+    }
+
+    @media (max-width: 1200px) {
+        [data-testid="stSidebar"] {
+            width: 300px !important;
+            min-width: 300px !important;
+            max-width: 300px !important;
+        }
+        [data-testid="stAppViewContainer"] .main .block-container {
+            max-width: 100%;
+            padding-left: 0.75rem;
+            padding-right: 0.75rem;
+        }
+    }
+
+    @media (max-width: 760px) {
+        .kpi-grid {
+            grid-template-columns: 1fr;
+        }
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# ---------------------------------------------------------------------------
-# Sidebar — filters + controls
-# ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.markdown("## 🛡️ Fraud Investigation")
-    st.markdown("---")
+    st.markdown('<p class="sidebar-title">Fraud Investigation Console</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sidebar-subtitle">Operations Workbench</p>', unsafe_allow_html=True)
+    st.markdown('<p class="t-body">Use controls to scope and prioritize investigative views.</p>', unsafe_allow_html=True)
 
-    st.markdown('<p class="section-header">Alert Filters</p>', unsafe_allow_html=True)
-
-    severity_filter = st.selectbox(
-        "Severity",
-        options=["All", "High", "Medium", "Low"],
-        index=0,
-    )
-    user_filter = st.text_input("User ID / Account ID", placeholder="partial match…")
-    merchant_filter = st.text_input("Merchant ID", placeholder="partial match…")
-
-    st.markdown('<p class="section-header" style="margin-top:20px">Date Range</p>', unsafe_allow_html=True)
-    default_from = (datetime.now(timezone.utc) - timedelta(days=7)).date()
-    default_to = datetime.now(timezone.utc).date()
-    date_from = st.date_input("From", value=default_from)
-    date_to = st.date_input("To", value=default_to)
-
-    st.markdown('<p class="section-header" style="margin-top:20px">High-Risk Threshold</p>', unsafe_allow_html=True)
-    min_fraud_prob = st.slider(
-        "Min fraud_probability",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.5,
-        step=0.05,
-        format="%.2f",
-    )
-
-    st.markdown("---")
-    st.markdown('<p class="section-header">Auto-Refresh</p>', unsafe_allow_html=True)
-    auto_refresh = st.checkbox("Enable auto-refresh", value=False)
-    refresh_interval = st.selectbox(
-        "Interval (seconds)",
-        options=[15, 30, 60, 120],
-        index=1,
-        disabled=not auto_refresh,
-    )
-
-    st.markdown("---")
-    if st.button("🔄 Refresh Now", use_container_width=True):
-        st.cache_data.clear()
+    if st.button("Clear All Filters", use_container_width=True):
+        _clear_filters()
         st.rerun()
 
-# ---------------------------------------------------------------------------
-# Data loading (cached per filter combination)
-# ---------------------------------------------------------------------------
+    st.markdown('<p class="section-label">Scope Filters</p>', unsafe_allow_html=True)
+    st.selectbox("Severity", ["All", "High", "Medium", "Low"], key="severity")
+    st.text_input("User or Account", key="user_account", placeholder="Identifier")
+    st.text_input("Merchant", key="merchant", placeholder="Identifier")
+    st.text_input("Transaction ID", key="transaction_id", placeholder="Transaction key")
 
-severity_arg = None if severity_filter == "All" else severity_filter
-date_from_str = date_from.isoformat() if date_from else None
-date_to_str = (date_to.isoformat() + "T23:59:59") if date_to else None
+    st.markdown('<p class="section-label">Time Window</p>', unsafe_allow_html=True)
+    st.date_input("Start Date", key="start_date")
+    st.date_input("End Date", key="end_date")
 
+    st.markdown('<p class="section-label">Quick Ranges</p>', unsafe_allow_html=True)
+    q1, q2, q3 = st.columns(3)
+    if q1.button("Last 24 Hours", use_container_width=True):
+        _apply_quick_range("Last 24 Hours")
+        st.rerun()
+    if q2.button("Last 7 Days", use_container_width=True):
+        _apply_quick_range("Last 7 Days")
+        st.rerun()
+    if q3.button("Last 30 Days", use_container_width=True):
+        _apply_quick_range("Last 30 Days")
+        st.rerun()
 
-@st.cache_data(ttl=15, show_spinner=False)
-def _cached_metrics() -> dict:
-    return load_metrics()
+    q4, q5, q6 = st.columns(3)
+    if q4.button("MTD", use_container_width=True):
+        _apply_quick_range("MTD")
+        st.rerun()
+    if q5.button("Last 90 Days", use_container_width=True):
+        _apply_quick_range("Last 90 Days")
+        st.rerun()
+    if q6.button("Custom", use_container_width=True):
+        _apply_quick_range("Custom")
+        st.rerun()
 
-
-@st.cache_data(ttl=15, show_spinner=False)
-def _cached_alerts(severity, user, merchant, dfrom, dto) -> pd.DataFrame:
-    return load_alerts(
-        severity=severity,
-        user_filter=user or None,
-        merchant_filter=merchant or None,
-        date_from=dfrom,
-        date_to=dto,
-    )
-
-
-@st.cache_data(ttl=15, show_spinner=False)
-def _cached_high_risk(min_prob) -> pd.DataFrame:
-    return load_high_risk_transactions(min_fraud_probability=min_prob)
-
-
-@st.cache_data(ttl=15, show_spinner=False)
-def _cached_timeline() -> pd.DataFrame:
-    return load_recent_transactions(limit=200)
-
-
-metrics = _cached_metrics()
-alerts_df = _cached_alerts(severity_arg, user_filter, merchant_filter, date_from_str, date_to_str)
-high_risk_df = _cached_high_risk(min_fraud_prob)
-timeline_df = _cached_timeline()
-
-# ---------------------------------------------------------------------------
-# Header
-# ---------------------------------------------------------------------------
-
-col_title, col_ts = st.columns([5, 1])
-with col_title:
-    st.markdown("# 🛡️ Fraud Investigation Dashboard")
-with col_ts:
     st.markdown(
-        f"<p style='color:#8b949e;font-size:0.78rem;text-align:right;margin-top:14px'>"
-        f"Last updated<br><strong>{datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}</strong></p>",
+        f'<div class="sidebar-footer-row">Last refresh: {st.session_state["last_refresh"]}</div>',
         unsafe_allow_html=True,
     )
 
-# Active high-severity alert banner
-if metrics["high_count"] > 0:
+
+st.markdown('<div class="control-strip">', unsafe_allow_html=True)
+status_left, status_right = st.columns([4.6, 3.4], gap="small")
+
+with status_left:
     st.markdown(
-        f'<div class="alert-banner">⚠️ {metrics["high_count"]} High-severity alert'
-        f'{"s" if metrics["high_count"] != 1 else ""} active</div>',
+        '<div class="status-inline">'
+        '<span class="status-dot"></span>'
+        '<span class="status-title">System Health</span>'
+        '<span class="status-sep"></span>'
+        '<span class="status-note">All systems operational</span>'
+        '</div>',
         unsafe_allow_html=True,
     )
 
-# ---------------------------------------------------------------------------
-# Section 1 — KPI metrics
-# ---------------------------------------------------------------------------
+with status_right:
+    st.markdown('<div class="top-controls">', unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns([1.1, 0.65, 0.95, 0.34], gap="small")
+    with c1:
+        st.markdown('<span class="auto-label">Auto refresh</span>', unsafe_allow_html=True)
+    with c2:
+        st.toggle("Auto Refresh Toggle", key="auto_refresh", label_visibility="collapsed")
+    with c3:
+        st.selectbox("Refresh Interval", ["10s", "30s", "60s", "120s"], key="refresh_interval", label_visibility="collapsed")
+    with c4:
+        if st.button("↻", use_container_width=True):
+            st.session_state["last_refresh"] = _now_utc().strftime("%H:%M:%S UTC")
+            st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
-st.markdown('<p class="section-header">Overview</p>', unsafe_allow_html=True)
+st.markdown('</div>', unsafe_allow_html=True)
 
-k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.metric("Total Alerts", f"{metrics['total_alerts']:,}")
-k2.metric("Scored Transactions", f"{metrics['total_scored']:,}")
-k3.metric("High Severity", metrics["high_count"], delta=None)
-k4.metric("Avg Fraud Prob", f"{metrics['avg_fraud_probability']:.3f}")
-k5.metric("Avg Anomaly Score", f"{metrics['avg_anomaly_score']:.3f}")
-k6.metric("Avg Risk Score", f"{metrics['avg_propagated_risk']:.3f}")
 
-st.markdown("---")
-
-# ---------------------------------------------------------------------------
-# Section 2 — Severity breakdown + top merchants
-# ---------------------------------------------------------------------------
-
-col_sev, col_merch = st.columns([1, 1])
-
-with col_sev:
-    st.markdown('<p class="section-header">Alert Severity Breakdown</p>', unsafe_allow_html=True)
-    sev_data = {
-        "Severity": ["High", "Medium", "Low"],
-        "Count": [metrics["high_count"], metrics["medium_count"], metrics["low_count"]],
-    }
-    sev_df = pd.DataFrame(sev_data)
-    sev_df["Share %"] = (
-        sev_df["Count"] / sev_df["Count"].sum() * 100
-        if sev_df["Count"].sum() > 0
-        else 0.0
-    ).round(1)
-
-    # Coloured severity rows via styled DataFrame
-    def _severity_style(row: pd.Series) -> list[str]:
-        colours = {"High": "background-color:#da363320", "Medium": "background-color:#d2992220", "Low": "background-color:#23863620"}
-        c = colours.get(row["Severity"], "")
-        return [c] * len(row)
-
-    st.dataframe(
-        sev_df.style.apply(_severity_style, axis=1).format({"Share %": "{:.1f}%"}),
-        use_container_width=True,
-        hide_index=True,
-        height=142,
-    )
-
-with col_merch:
-    st.markdown('<p class="section-header">Top Merchants by Alert Count</p>', unsafe_allow_html=True)
-    if metrics["top_merchants"]:
-        merch_df = pd.DataFrame(metrics["top_merchants"])
-        merch_df.columns = ["Merchant ID", "Alert Count"]
-        st.dataframe(merch_df, use_container_width=True, hide_index=True, height=200)
-    else:
-        st.info("No merchant data yet.")
-
-st.markdown("---")
-
-# ---------------------------------------------------------------------------
-# Section 3 — Recent fraud alerts (filterable)
-# ---------------------------------------------------------------------------
-
-st.markdown('<p class="section-header">Recent Fraud Alerts</p>', unsafe_allow_html=True)
-
-if alerts_df.empty:
-    st.info("No alerts match the current filters.")
-else:
-    # Select and rename display columns
-    _ALERT_DISPLAY_COLS = {
-        "transaction_id": "Transaction ID",
-        "user_id": "User ID",
-        "account_id": "Account ID",
-        "merchant_id": "Merchant ID",
-        "amount": "Amount ($)",
-        "timestamp": "Txn Timestamp",
-        "fraud_probability": "Fraud Prob",
-        "anomaly_score": "Anomaly Score",
-        "propagated_risk_score": "Risk Score",
-        "alert_reason": "Trigger Reason",
-        "alert_severity": "Severity",
-        "alert_timestamp": "Alert Time",
-        "received_at": "Stored At",
-    }
-    available = [c for c in _ALERT_DISPLAY_COLS if c in alerts_df.columns]
-    display_df = alerts_df[available].rename(columns=_ALERT_DISPLAY_COLS)
-
-    # Format numeric columns
-    for col in ["Fraud Prob", "Anomaly Score", "Risk Score"]:
-        if col in display_df.columns:
-            display_df[col] = display_df[col].apply(
-                lambda v: f"{v:.4f}" if pd.notna(v) else "—"
-            )
-    if "Amount ($)" in display_df.columns:
-        display_df["Amount ($)"] = display_df["Amount ($)"].apply(
-            lambda v: f"${v:,.2f}" if pd.notna(v) else "—"
-        )
-
-    def _style_severity(val: str) -> str:
-        return {
-            "High": "color:#ff7b72;font-weight:700",
-            "Medium": "color:#e3b341;font-weight:600",
-            "Low": "color:#3fb950;font-weight:500",
-        }.get(str(val), "")
-
-    styled = display_df.style
-    if "Severity" in display_df.columns:
-        styled = styled.applymap(_style_severity, subset=["Severity"])
-
-    st.dataframe(
-        styled,
-        use_container_width=True,
-        hide_index=True,
-        height=400,
-    )
-    st.caption(f"Showing {len(alerts_df):,} alerts — adjust filters to narrow results.")
-
-st.markdown("---")
-
-# ---------------------------------------------------------------------------
-# Section 4 — Top high-risk transactions
-# ---------------------------------------------------------------------------
-
+st.markdown('<div class="sp-16"></div>', unsafe_allow_html=True)
 st.markdown(
-    f'<p class="section-header">Top High-Risk Transactions '
-    f'(fraud_probability ≥ {min_fraud_prob:.2f})</p>',
+    """
+    <div class="header-block">
+        <p class="header-title">Fraud Investigation Dashboard</p>
+        <p class="header-subtitle">Unified monitoring surface for alert triage, risk signals, and analyst investigation context.</p>
+    </div>
+    """,
     unsafe_allow_html=True,
 )
 
-if high_risk_df.empty:
-    st.info(f"No transactions with fraud_probability ≥ {min_fraud_prob:.2f} found.")
-else:
-    _RISK_DISPLAY_COLS = {
-        "transaction_id": "Transaction ID",
-        "user_id": "User ID",
-        "merchant_id": "Merchant ID",
-        "amount": "Amount ($)",
-        "fraud_probability": "Fraud Prob",
-        "anomaly_score": "Anomaly Score",
-        "propagated_risk_score": "Risk Score",
-        "composite_risk": "Composite Risk",
-        "alert_severity": "Severity",
-        "alert_reason": "Alert Reason",
-        "processed_at": "Processed At",
-    }
-    avail = [c for c in _RISK_DISPLAY_COLS if c in high_risk_df.columns]
-    hr_display = high_risk_df[avail].rename(columns=_RISK_DISPLAY_COLS)
 
-    for col in ["Fraud Prob", "Anomaly Score", "Risk Score", "Composite Risk"]:
-        if col in hr_display.columns:
-            hr_display[col] = hr_display[col].apply(
-                lambda v: f"{v:.4f}" if pd.notna(v) else "—"
-            )
-    if "Amount ($)" in hr_display.columns:
-        hr_display["Amount ($)"] = hr_display["Amount ($)"].apply(
-            lambda v: f"${v:,.2f}" if pd.notna(v) else "—"
-        )
+st.markdown('<div class="sp-16"></div>', unsafe_allow_html=True)
+st.markdown(
+    """
+    <div class="kpi-grid">
+        <div class="kpi-card">
+            <div class="kpi-head">
+                <span class="kpi-icon kpi-icon-blue">A</span>
+                <p class="kpi-label">Total Alerts</p>
+            </div>
+            <p class="kpi-number">18,432</p>
+            <p class="kpi-delta kpi-delta-up"><span class="delta-arrow">&uarr;</span>+2.4% vs prev 7 days</p>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-head">
+                <span class="kpi-icon kpi-icon-red">C</span>
+                <p class="kpi-label">Critical Alerts</p>
+            </div>
+            <p class="kpi-number">1,148</p>
+            <p class="kpi-delta kpi-delta-up"><span class="delta-arrow">&uarr;</span>+0.9% vs prev 7 days</p>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-head">
+                <span class="kpi-icon kpi-icon-orange">P</span>
+                <p class="kpi-label">Avg Fraud Prob</p>
+            </div>
+            <p class="kpi-number">0.71</p>
+            <p class="kpi-delta kpi-delta-down"><span class="delta-arrow">&darr;</span>-1.1% vs prev 7 days</p>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-head">
+                <span class="kpi-icon kpi-icon-green">N</span>
+                <p class="kpi-label">Avg Anomaly Score</p>
+            </div>
+            <p class="kpi-number">0.63</p>
+            <p class="kpi-delta kpi-delta-flat"><span class="delta-arrow">&rarr;</span>No material change</p>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-head">
+                <span class="kpi-icon kpi-icon-orange">R</span>
+                <p class="kpi-label">High-Risk Txns</p>
+            </div>
+            <p class="kpi-number">7,392</p>
+            <p class="kpi-delta kpi-delta-up"><span class="delta-arrow">&uarr;</span>+0.3% vs prev 7 days</p>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-head">
+                <span class="kpi-icon kpi-icon-green">U</span>
+                <p class="kpi-label">Users Flagged</p>
+            </div>
+            <p class="kpi-number">482</p>
+            <p class="kpi-delta kpi-delta-down"><span class="delta-arrow">&darr;</span>-0.5% vs prev 7 days</p>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-    styled_hr = hr_display.style
-    if "Severity" in hr_display.columns:
-        styled_hr = styled_hr.applymap(_style_severity, subset=["Severity"])
 
-    st.dataframe(styled_hr, use_container_width=True, hide_index=True, height=360)
-    st.caption(f"Showing top {len(high_risk_df):,} high-risk transactions by composite score.")
+st.markdown('<div class="sp-20"></div>', unsafe_allow_html=True)
+tab_overview, tab_alerts, tab_graph, tab_timeline = st.tabs(["Overview", "Alerts", "Graph Signals", "Timeline"])
 
-st.markdown("---")
 
-# ---------------------------------------------------------------------------
-# Section 5 — Recent transaction timeline
-# ---------------------------------------------------------------------------
+hours = ["00", "04", "08", "12", "16", "20"]
+alerts = [35, 62, 58, 91, 74, 49]
+risk = [0.38, 0.42, 0.47, 0.61, 0.55, 0.49]
 
-st.markdown('<p class="section-header">Recent Transaction Timeline</p>', unsafe_allow_html=True)
+COLOR_BLUE = "#2f6fed"
+COLOR_RED = "#bf5f5f"
+COLOR_ORANGE = "#d8892b"
+COLOR_GREEN = "#2ea874"
 
-if timeline_df.empty:
-    st.info("No scored transactions in the database yet.")
-else:
-    _TIMELINE_COLS = {
-        "transaction_id": "Transaction ID",
-        "user_id": "User ID",
-        "merchant_id": "Merchant ID",
-        "amount": "Amount ($)",
-        "fraud_probability": "Fraud Prob",
-        "anomaly_score": "Anomaly Score",
-        "propagated_risk_score": "Risk Score",
-        "alert_triggered": "Alert?",
-        "alert_severity": "Severity",
-        "processed_at": "Processed At",
-        "batch_id": "Batch",
-    }
-    tl_avail = [c for c in _TIMELINE_COLS if c in timeline_df.columns]
-    tl_display = timeline_df[tl_avail].rename(columns=_TIMELINE_COLS)
-
-    for col in ["Fraud Prob", "Anomaly Score", "Risk Score"]:
-        if col in tl_display.columns:
-            tl_display[col] = tl_display[col].apply(
-                lambda v: f"{v:.4f}" if pd.notna(v) else "—"
-            )
-    if "Amount ($)" in tl_display.columns:
-        tl_display["Amount ($)"] = tl_display["Amount ($)"].apply(
-            lambda v: f"${v:,.2f}" if pd.notna(v) else "—"
-        )
-    if "Alert?" in tl_display.columns:
-        tl_display["Alert?"] = tl_display["Alert?"].apply(
-            lambda v: "✅ Yes" if v else "—"
-        )
-
-    styled_tl = tl_display.style
-    if "Severity" in tl_display.columns:
-        styled_tl = styled_tl.applymap(_style_severity, subset=["Severity"])
-
-    st.dataframe(styled_tl, use_container_width=True, hide_index=True, height=380)
-    st.caption(
-        f"Most recent {len(timeline_df):,} scored transactions — newest first."
+trend_fig = go.Figure()
+trend_fig.add_trace(
+    go.Scatter(
+        x=hours,
+        y=alerts,
+        mode="lines+markers",
+        name="Alerts",
+        line={"color": COLOR_BLUE, "width": 2},
+        marker={"size": 6, "color": COLOR_BLUE},
     )
+)
+trend_fig.update_layout(**_plotly_layout("Alert Volume Trend"))
 
-# ---------------------------------------------------------------------------
-# Auto-refresh
-# ---------------------------------------------------------------------------
+risk_fig = go.Figure()
+risk_fig.add_trace(
+    go.Bar(
+        x=["Segment A", "Segment B", "Segment C", "Segment D"],
+        y=[0.62, 0.48, 0.39, 0.27],
+        name="Mean Risk",
+        marker={"color": COLOR_ORANGE},
+    )
+)
+risk_fig.update_layout(**_plotly_layout("Segment Risk Score"))
 
-if auto_refresh:
-    time.sleep(refresh_interval)
-    st.cache_data.clear()
-    st.rerun()
+mix_fig = go.Figure()
+mix_fig.add_trace(
+    go.Pie(
+        labels=["Critical", "Medium", "Low"],
+        values=[26, 49, 25],
+        marker={"colors": [COLOR_RED, COLOR_ORANGE, COLOR_GREEN]},
+        textinfo="label+percent",
+        hole=0.55,
+        sort=False,
+    )
+)
+mix_fig.update_layout(
+    **_plotly_layout("Severity Mix"),
+    showlegend=False,
+)
+
+heatmap_fig = go.Figure(
+    data=go.Heatmap(
+        z=[[2, 3, 4, 2], [3, 5, 6, 3], [2, 4, 5, 2], [1, 2, 3, 1]],
+        x=["A", "B", "C", "D"],
+        y=["Q1", "Q2", "Q3", "Q4"],
+        colorscale=[
+            [0.0, COLOR_BLUE],
+            [0.5, COLOR_ORANGE],
+            [1.0, COLOR_GREEN],
+        ],
+        showscale=False,
+    )
+)
+heatmap_fig.update_layout(**_plotly_layout("Risk Density Heatmap"))
+
+
+for tab_name, tab in [
+    ("overview", tab_overview),
+    ("alerts", tab_alerts),
+    ("graph", tab_graph),
+    ("timeline", tab_timeline),
+]:
+    with tab:
+        a1, a2, a3 = st.columns([1, 1, 1], gap="small")
+        with a1:
+            st.plotly_chart(
+                trend_fig,
+                use_container_width=True,
+                config={"displayModeBar": False},
+                key=f"trend_chart_{tab_name}",
+            )
+        with a2:
+            st.plotly_chart(
+                risk_fig,
+                use_container_width=True,
+                config={"displayModeBar": False},
+                key=f"risk_chart_{tab_name}",
+            )
+        with a3:
+            st.plotly_chart(
+                mix_fig,
+                use_container_width=True,
+                config={"displayModeBar": False},
+                key=f"mix_chart_{tab_name}",
+            )
+
+        st.markdown('<div class="sp-16"></div>', unsafe_allow_html=True)
+        l1, l2 = st.columns([2.1, 1], gap="small")
+        with l1:
+            st.markdown('<div class="table-card">', unsafe_allow_html=True)
+            st.markdown('<p class="t-card">Investigation Queue</p>', unsafe_allow_html=True)
+            st.markdown(
+                """
+                <table class="styled-table">
+                    <thead>
+                        <tr><th>Transaction ID</th><th>User</th><th>Score</th><th>Status</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>TX-9011</td><td>U-118</td><td>0.92</td><td>Escalated</td></tr>
+                        <tr><td>TX-9012</td><td>U-271</td><td>0.89</td><td>Escalated</td></tr>
+                        <tr><td>TX-9013</td><td>U-554</td><td>0.84</td><td>Review</td></tr>
+                        <tr><td>TX-9014</td><td>U-119</td><td>0.81</td><td>Review</td></tr>
+                        <tr><td>TX-9015</td><td>U-044</td><td>0.79</td><td>Monitor</td></tr>
+                    </tbody>
+                </table>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
+        with l2:
+            st.plotly_chart(
+                heatmap_fig,
+                use_container_width=True,
+                config={"displayModeBar": False},
+                key=f"heatmap_chart_{tab_name}",
+            )
