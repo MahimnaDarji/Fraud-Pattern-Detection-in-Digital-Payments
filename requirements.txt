@@ -11,4 +11,3 @@ pandas
 pyarrow
 fastapi
 uvicorn
-streamlit
