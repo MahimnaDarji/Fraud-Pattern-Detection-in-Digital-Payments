@@ -19,14 +19,19 @@ Financial fraud systems need to process large volumes of transactions while iden
 
 ## Tech Stack
 
-| Layer            | Tools Used                              |
-|------------------|------------------------------------------|
-| Streaming        | Apache Kafka                             |
-| Processing       | PySpark Structured Streaming             |
-| Storage          | Cassandra                                |
-| Backend Logic    | Python                                   |
-| Dashboards       | React, TypeScript, Tailwind, Recharts    |
-| Development      | Jupyter Notebook, Local Setup            |
+| Layer                     | Tools Used                                         |
+|---------------------------|---------------------------------------------------|
+| Ingestion                | Python, Kafka Producer                             |
+| Streaming                | Apache Kafka                                       |
+| Processing               | PySpark Structured Streaming                       |
+| Validation               | Pydantic, Python                                   |
+| Feature Engineering      | PySpark window functions, rolling aggregations     |
+| Machine Learning         | scikit-learn, Isolation Forest, XGBoost or LightGBM|
+| Graph Analysis           | NetworkX                                           |
+| Backend Logic            | Python                                             |
+| Dashboard                | React, TypeScript, Tailwind, Recharts              |
+| Storage and Artifacts    | Parquet, CSV, model artifacts                      |
+| Development              | VS Code, Jupyter Notebook, Local Setup             |
 
 ## Features Built
 
@@ -55,9 +60,18 @@ Financial fraud systems need to process large volumes of transactions while iden
 - Displayed KPIs, alerts, and risk signals  
 - Included views for alerts, graph signals, and timeline analysis  
 
-## Dashboard Image
+## Sample Dashboards
 
+| Alerts View                  | Graph Signals View            |
+|------------------------------|-------------------------------|
+| Alert investigation queue    | Entity-level risk signals     |
+| Risk matrix for transactions | Network summary and clusters  |
 
+| Timeline View                | Overview                      |
+|-----------------------------|-------------------------------|
+| Event progression and latency | KPIs and system-level metrics |
+
+## Live Dashboard Link
 
 ## Insights Discovered
 
@@ -98,6 +112,44 @@ Final Score = Weighted (Model Score + Z-Score Features)
 ```
 
 This reduced false positives while keeping high-risk cases visible.
+
+## Graph-Based Fraud Detection
+
+A transaction graph is built using users, accounts, merchants, and transaction relationships.
+
+Graph features include:
+
+- Entity graph construction  
+- PageRank-based node importance  
+- Community detection  
+- Triangle count for circular patterns  
+- Connected component detection  
+- Component size  
+- Graph-based risk propagation  
+
+This helps detect fraud patterns that are not obvious from one transaction alone.
+
+## Dashboard
+
+The dashboard was rebuilt from scratch using React instead of Streamlit to improve layout control and visual quality.
+
+The dashboard includes:
+
+- Overview page  
+- Alerts page  
+- Graph Signals page  
+- Timeline page  
+- KPI cards  
+- Risk charts  
+- Alert investigation queue  
+- Risk matrix  
+- Graph signal visualizations  
+- Pipeline latency view  
+- Streaming event timeline
+
+## Dashboard Images
+
+
 
 ## Why This Project Stands Out
 
