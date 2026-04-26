@@ -151,19 +151,19 @@ The dashboard includes:
 
 ### Overview
 
-![Overview Dashboard](images/Overview.jpeg)
+![Overview Dashboard](Images/Overview.jpeg)
 
 ### Alerts
 
-![Alerts Dashboard](images/Alerts.jpeg)
+![Alerts Dashboard](Images/Alerts.jpeg)
 
 ### Graph Signals
 
-![Graph Signals Dashboard](images/Graphs.jpeg)
+![Graph Signals Dashboard](Images/Graphs.jpeg)
 
 ### Timeline
 
-![Timeline Dashboard](images/Timeline.jpeg)
+![Timeline Dashboard](Images/Timeline.jpeg)
 
 ## Why This Project Stands Out
 
