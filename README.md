@@ -1,128 +1,108 @@
 # Fraud Pattern Detection in Digital Payments
 
-> Built by two data science graduates, Mahimna Darji & Hema Manasi Potnuru. This project simulates a fraud detection system for digital payments using Kafka, Spark, machine learning, graph analysis, and a React dashboard.
-
----
+Built by two data science graduates, Mahimna Darji & Hema Manasi Potnuru. This project simulates a fraud detection system using streaming data, risk modeling, and interactive dashboards. It reflects how fraud monitoring works across transactions, networks, and alerts.
 
 ## Project Overview
 
-Digital payment platforms process large volumes of transactions every second. Fraud detection systems need to identify suspicious activity quickly while keeping enough context for investigation.
+Financial fraud systems need to process large volumes of transactions while identifying suspicious behavior in near real time. This project was built to:
 
-We built this to:
-
-* Stream payment transactions through Kafka
-* Process transactions using Spark Structured Streaming
-* Detect suspicious behavior using anomaly detection and fraud scoring
-* Identify network-based fraud patterns such as rings, bursts, and risky clusters
-* Present alerts, graph signals, and timeline activity through a React dashboard
-
----
+- Simulate digital payment transactions with realistic fraud patterns  
+- Process data through a streaming pipeline using Kafka and Spark  
+- Detect anomalies using statistical and machine learning methods  
+- Model network-based fraud patterns such as rings and burst activity  
+- Present investigation workflows through an interactive dashboard  
 
 ## Authors
 
-* **Mahimna Darji**
-* **Hema Manasi Potnuru**
-
----
+- Mahimna Darji  
+- Hema Manasi Potnuru  
 
 ## Tech Stack
 
-| Layer              | Tools Used                            |
-| ------------------ | ------------------------------------- |
-| Data Source        | Synthetic transaction dataset         |
-| Streaming          | Apache Kafka                          |
-| Stream Processing  | PySpark Structured Streaming          |
-| Machine Learning   | Isolation Forest, XGBoost, LightGBM   |
-| Graph Analysis     | NetworkX                              |
-| Backend            | Python, FastAPI                       |
-| Dashboard          | React, TypeScript, Tailwind, Recharts |
-| Storage            | Parquet, CSV, model artifacts         |
-| Development        | VS Code, Git, local environment       |
-
----
+| Layer            | Tools Used                              |
+|------------------|------------------------------------------|
+| Streaming        | Apache Kafka                             |
+| Processing       | PySpark Structured Streaming             |
+| Storage          | Cassandra                                |
+| Backend Logic    | Python                                   |
+| Dashboards       | React, TypeScript, Tailwind, Recharts    |
+| Development      | Jupyter Notebook, Local Setup            |
 
 ## Features Built
 
-### Transaction Ingestion
+### Transaction Simulation
+- Generated large-scale synthetic transaction data  
+- Included realistic fields such as user, merchant, device, and amount  
+- Introduced controlled fraud patterns for testing  
 
-* Read transactions from the prepared dataset
-* Streamed records into Kafka topic using a Python producer
-* Preserved transaction fields during ingestion
-* Added controlled streaming rate for simulation
+### Streaming Pipeline
+- Ingested transaction data using Kafka producers  
+- Processed streams using Spark with window-based logic  
+- Handled late events and ingestion delays  
 
-### Data Validation
+### Fraud Detection Logic
+- Applied anomaly detection using Isolation Forest and statistical rules  
+- Calculated fraud probability and anomaly scores  
+- Created risk bands based on thresholds  
 
-* Added schema validation before sending records to Kafka
-* Handled missing values and invalid records
-* Standardized timestamp fields
-* Logged skipped records without stopping the pipeline
+### Network Pattern Detection
+- Identified fraud rings and burst activity  
+- Modeled relationships between entities  
+- Calculated propagated risk across connected nodes  
 
-### Streaming Feature Engineering
+### Dashboard
+- Built a React-based investigation console  
+- Displayed KPIs, alerts, and risk signals  
+- Included views for alerts, graph signals, and timeline analysis  
 
-* Consumed Kafka transactions using Spark Structured Streaming
-* Created rolling transaction frequency features
-* Calculated user-level and merchant-level aggregates
-* Enriched transactions with historical profile statistics
-
-### Fraud Scoring
-
-* Trained anomaly detection model using Isolation Forest
-* Added supervised fraud scoring using XGBoost or LightGBM
-* Generated fraud probability and anomaly score
-* Assigned risk levels based on scoring thresholds
-
-### Graph-Based Fraud Detection
-
-* Built transaction entity graphs using users, accounts, and merchants
-* Calculated PageRank-based node importance
-* Detected communities and connected components
-* Identified triangle patterns for circular activity
-* Calculated propagated risk across connected nodes
-
-### Investigation Dashboard
-
-* Built a React dashboard for fraud monitoring
-* Added Overview, Alerts, Graph Signals, and Timeline views
-* Displayed fraud KPIs, alert tables, graph metrics, and pipeline activity
-* Designed the interface as a compact fraud operations console
-
----
-
-## Sample Dashboards
-
-| Overview View                    | Alerts View                         |
-| -------------------------------- | ----------------------------------- |
-| KPI summary and alert patterns   | Alert queue and risk matrix         |
-| Severity mix and alert reasons   | Transaction-level investigation     |
-
-| Graph Signals View               | Timeline View                       |
-| -------------------------------- | ----------------------------------- |
-| Entity risk and cluster signals  | Streaming events and latency        |
-| Propagated risk and graph metrics| Processing efficiency indicators    |
-
----
-
-### Live Dashboard Link
+## Dashboard Image
 
 
-
----
 
 ## Insights Discovered
 
-* Fraud activity often appears in bursts instead of spreading evenly over time
-* High-risk users and merchants tend to form connected clusters
-* Some transactions appear safe alone but become risky through network exposure
-* Transaction velocity helps detect sudden abnormal activity
-* Graph-based risk propagation adds useful context beyond transaction-level scoring
-
----
+- Fraud activity often appears in short bursts rather than evenly over time  
+- Network-linked entities tend to share similar risk patterns  
+- High-value transactions are not always fraudulent but show higher variation  
+- Certain users repeatedly interact with high-risk merchants  
+- Propagated risk helps identify indirect exposure  
 
 ## Additional Analysis & Insights from Backend
 
 ### Network Risk Score
 
-We created a graph-based risk score:
+We calculated a propagated risk score across connected entities:
 
-```text
-Network Risk Score = Base Transaction Risk + Risk Influence from Connected Entities
+```
+Network Risk = Base Risk + Influence from Connected High-Risk Nodes
+```
+
+This helped identify users who were not directly fraudulent but connected to suspicious clusters.
+
+### Transaction Velocity Signal
+
+To detect rapid activity spikes:
+
+```
+Velocity Score = Transactions per User per Time Window
+```
+
+Higher values indicated potential burst fraud behavior.
+
+### Anomaly Score Calibration
+
+We combined model output with statistical thresholds:
+
+```
+Final Score = Weighted (Model Score + Z-Score Features)
+```
+
+This reduced false positives while keeping high-risk cases visible.
+
+## Why This Project Stands Out
+
+- Covers the full pipeline from data generation to dashboard  
+- Includes both transaction-level and network-level analysis  
+- Uses streaming concepts instead of static batch processing  
+- Reflects how investigation workflows are handled in practice  
+- Designed to be extended with real-time APIs and production systems  
