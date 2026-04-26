@@ -1,0 +1,18 @@
+:root {
+  --color-bg-main: #070b12;
+  --color-bg-sidebar: #0b111c;
+  --color-panel: #101826;
+  --color-panel-soft: #131d2c;
+  --color-border: #223044;
+
+  --color-text-primary: #eef3fb;
+  --color-text-secondary: #b8c4d6;
+  --color-text-muted: #7f8fa6;
+
+  --color-accent-blue: #4f8cff;
+  --color-risk-red: #ef6a6a;
+  --color-warning-orange: #f5a84b;
+  --color-safe-green: #4fc48d;
+
+  --shadow-panel: 0 18px 50px rgba(0, 0, 0, 0.28);
+}
