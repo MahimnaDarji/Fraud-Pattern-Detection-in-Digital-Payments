@@ -26,7 +26,7 @@ Financial fraud systems need to process large volumes of transactions while iden
 | Processing               | PySpark Structured Streaming                       |
 | Validation               | Pydantic, Python                                   |
 | Feature Engineering      | PySpark window functions, rolling aggregations     |
-| Machine Learning         | scikit-learn, Isolation Forest, XGBoost or LightGBM|
+| Machine Learning         | scikit-learn, Isolation Forest, XGBoost            |
 | Graph Analysis           | NetworkX                                           |
 | Backend Logic            | Python                                             |
 | Dashboard                | React, TypeScript, Tailwind, Recharts              |
@@ -34,11 +34,6 @@ Financial fraud systems need to process large volumes of transactions while iden
 | Development              | VS Code, Jupyter Notebook, Local Setup             |
 
 ## Features Built
-
-### Transaction Simulation
-- Generated large-scale synthetic transaction data  
-- Included realistic fields such as user, merchant, device, and amount  
-- Introduced controlled fraud patterns for testing  
 
 ### Streaming Pipeline
 - Ingested transaction data using Kafka producers  
